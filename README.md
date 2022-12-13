@@ -6,7 +6,7 @@ To tackle and attenuate the sparsity in the single-cell data, we propose a cell 
 
 MetaCellaR is an Rscript to summerize single cells based on k-medoids. The clustering is done per cell type. We refer to these clusters as metacells.
 Essentially, we compute the center of each metacell (by averaginf the gene expression profiles of cells that are grouped together into the same cluster) and consider this as the expression profile of a metacell. The gif below illustrates this procedure:
-![ Alt text](/projects/triangulate/work/MetaCellaR/MetaCellaR/metacellar_gif.gif) [](/projects/triangulate/work/MetaCellaR/MetaCellaR/metacellar_gif.gif)
+![ Alt text](metacellar_gif.gif) [](metacellar_gif.gif)
 
 The input arguments to our MetaCellaR script are:
 - Specify the input format of the RNA-seq data using the `csv_flag` argument.
