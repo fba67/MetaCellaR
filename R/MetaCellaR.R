@@ -2,16 +2,17 @@
 ### The clustering is done per cell type ###
 ### parameter k is defined based on the number of potential groups that have at least 30 cells inside (k <- ncol(CT_cluster) / 30)
 
-set.seed(0)
-library(cluster)
-library(knn.covertree)
-library(irlba)
-library(data.table)
-library(ggplot2)
-library(ggdendro)
-library(cowplot)
-library(parallel)
-library(DESeq2)
+#set.seed(0)
+#library(cluster)
+#library(knn.covertree)
+#library(irlba)
+#library(data.table)
+#library(ggplot2)
+#library(ggdendro)
+#library(cowplot)
+#library(parallel)
+#library(DESeq2)
+
 ########################
 summary_method <- "kmed_means" #kmed
 iter_flag <- F
@@ -170,6 +171,17 @@ merge_small_mc <- function(clustering, thresh= 30){
 ####### End of functions #######
 ################################
 
+#' @import cluster
+#' @import knn.covertree
+#' @import irlba
+#' @import data.table
+#' @import ggplot2
+#' @import ggdendro
+#' @import cowplot
+#' @import parallel
+#' @import DESeq2
+#' @import pheatmap 
+#' @import viridis
 #' @param file path to the Seurat object or a csv file containing scRNA-seq data
 #' @param RNA indicate the slot in the Seurat object where the RNA tags are stored (e.g., assays$RNA@counts)
 #' @param ATAC indicate the slot in the Seurat object where the ATAC tags are stored (e.g., assays$peak@counts)
@@ -577,23 +589,6 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL){
 	if(length(assay_slot)){
 		save(atac2metacell_info, ATACcounts, clusters, RNA_metacell_umap, ATAC_umap, mc_names, file= paste0(output_file, "/", summary_method, "_clustered.RData"))
 
-		## Normalize the ATAC reads based on total read counts
-		if(F){ ## We decided to run the models with normalized ATAC "metacells". Therefore, I need to take the depth normalization to the after metacell aggregation of ATAC cells.
-			if(normalization_flag){
-				ATACcounts_raw <- ATACcounts
-				total_ATAC <- colSums(ATACcounts)
-				total_ATAC[which(total_ATAC == 0)] <- 1 ## If a cell had zero reads across all peaks, I assign a non-zero value to that total reads to avoid division by zero
-				#ATACcounts_depthNorm <- ATACcounts / matrix(rep(total_ATAC, times= nrow(ATACcounts)), nrow= ATACcounts, byrow= T)
-				ATACcounts_depthNorm <- t(t(ATACcounts) / total_ATAC)
-				ATACcounts_depthNorm <- ATACcounts_depthNorm * 1e6
-				ATACcounts <- ATACcounts_depthNorm
-				#cors <- sapply(seq(nrow(ATACcounts)), function(i)cor(as.numeric(ATACcounts_raw[i, ]), as.numeric(ATACcounts[i, ])))
-				pdf(paste0(output_file, "/plots/ATAC_depthNormalization_inspection.pdf"))
-				plot(log2(1 + rowMeans(ATACcounts)), log2(1 + rowMeans(ATACcounts_raw)), xlab= "log2(1 + avg depth normalized)", ylab= "log2(1 + raw)", main= "ATAC", pch= 20)
-				dev.off()
-
-			}
-		}
 		uniq_mc <- unique(atac2metacell_info$metacell)
 		atac_metacell <- NULL;
 		atac_metacell_sum <- NULL;
@@ -604,8 +599,9 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL){
 			print(class(ATACcounts))
 			print(dim(ATACcounts))
 			if(length(hits) > 1){
-				atac_metacell <- cbind(atac_metacell, rowMeans(ATACcounts[, hits]))
-				atac_metacell_sum <- cbind(atac_metacell_sum, rowSums(ATACcounts[, hits]))
+				atac_metacell <- cbind(atac_metacell, Matrix::rowMeans(ATACcounts[, hits]))
+				#atac_metacell <- cbind(atac_metacell, apply(ATACcounts[, hits]), 2, apply= mean)
+				atac_metacell_sum <- cbind(atac_metacell_sum, Matrix::rowSums(ATACcounts[, hits]))
 			}else{
 				atac_metacell <- cbind(atac_metacell, ATACcounts[, hits])
 				atac_metacell_sum <- cbind(atac_metacell_sum, ATACcounts[, hits])
@@ -622,7 +618,7 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL){
 			atac_metacell_sum <- ATACcounts_depthNorm
 			#cors <- sapply(seq(nrow(ATACcounts)), function(i)cor(as.nmeric(ATACcounts_raw[i, ]), as.numeric(ATACcounts[i, ])))
 			pdf(paste0(output_file, "/plots/ATAC_depthNormalization_inspection.pdf"))
-			plot(log2(1 + rowMeans(atac_metacell_sum)), log2(1 + rowMeans(ATACcounts)), xlab= "log2(1 + avg depth normalized)", ylab= "log2(1 + raw)", main= "ATAC", pch= 20)
+			plot(log2(1 + rowMeans(atac_metacell_sum)), log2(1 + Matrix::rowMeans(ATACcounts)), xlab= "log2(1 + avg depth normalized)", ylab= "log2(1 + raw)", main= "ATAC", pch= 20)
 			dev.off()
 		}
 		write.csv(atac_metacell, paste0(output_file, "/results/cellSummarized_ATAC_", summary_method, ".csv"))
