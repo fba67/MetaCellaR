@@ -4,7 +4,7 @@ This sparsity often popses a problem for machine learning approaches, which rely
 
 To tackle and attenuate the sparsity in the single-cell data, we propose a cell summarization strategy, in where the similar cells (similarity based on their gene expression profile) are aggregated together to empower the signal within the data.
 
-MetaCellaR is an Rscript to summerize single cells based on k-medoids. The clustering is done per cell type. We refer to these clusters as metacells.
+MetaCellaR is an R package to summerize single cells based on k-medoids. The clustering is done per cell type. We refer to these clusters as metacells.
 Essentially, we compute the center of each metacell (by averaginf the gene expression profiles of cells that are grouped together into the same cluster) and consider this as the expression profile of a metacell. The gif below illustrates this procedure:
 ![ Alt text](metacellar_gif.gif) [](metacellar_gif.gif)
 
