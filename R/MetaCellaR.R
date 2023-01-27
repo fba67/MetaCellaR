@@ -200,10 +200,12 @@ merge_small_mc <- function(clustering, thresh= 30){
 metacellar.run <- function(summary_method = "kmed_means", csv_flag = F,
 merge_flag = T, normalization_flag = T, reduction = "umap", file_name, gtf_file,
 umap_flag = F, RNA_count_slot, ATAC_count_slot, celltype_info, assay_slot, output_file = getwd(),
-expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL){
+expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL, metadata= c()){
 	summary_method <- "kmed_means" #kmed
+	if(!length(metadata) & !csv_flag){
+		metadata <- gsub("meta.data$", "", celltype_info)
+	}
 #	library("Matrix")
-	print(sessionInfo())
 	if(!length(file_name)){
 		stop("Argument file_name is missing. Please provide the path to your input file using the -file option followed by the path to your file!")
 	}else if(csv_flag){# CSV file
@@ -232,6 +234,13 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL){
 			Rds_name <- load(file_name)
 			Sub <- get(Rds_name) ##To make it generalizable for Suerat object stored with any name
 		}
+		## Check if the given metadata fields exist in the Seurat object
+		metadata_values <- list()
+		if(length(metadata)){ ## !!I might need to use a tryCatch statement to properly address this check!!
+			for(md in metadata){
+				metadata_values[[md]] <- unique(unlist(Sub[[md]]))
+			}
+		}
 		print("Done loading the Seurat object")
 		print("Done loading Rds!")
 		celltypes <- eval(parse(text= paste0(Rds_name, "@", celltype_info)))
@@ -244,6 +253,8 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL){
 		}
 		print(paste("RNA_count_slot:", RNA_count_slot))
 		RNAcounts <- eval(parse(text= paste0(Rds_name, "@", RNA_count_slot))) #Sub@assays$RNA@counts
+		# rna_hits <- seq(nrow(Sub@meta.data)) ## in case the input is a Suerat object containing only the RNA assay. This index vector is then later used during the defining of the groups for K-med clustering
+		
 		gene_names <- rownames(RNAcounts)
 #		RNAcounts <- as.matrix(RNAcounts)
 		cell_types <- unique(as.character(celltypes))
@@ -292,7 +303,6 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL){
 	cluster_data <- list()
 	print(dim(RNAcounts))
 
-
 	mc_quality_info <- list()
 	mc_outlier_info <- list()
 	RNA_metacell_umap_plot <- list()
@@ -300,144 +310,180 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL){
 	mc_distr <- list()
 	ks_info <- list()
 	pass_num <- 1
+	ctr <- 1
 	library(pheatmap)
-	pdf(paste0(output_file, "/plots/", "mc_dendrogram.pdf"))
-	for(ct in cell_types){
-	print(ct)
-	if(!csv_flag){
-		if(!length(assay_slot)){
-			CT_cluster <- RNAcounts[, rownames(eval(parse(text= paste0(Rds_name, "@meta.data")))[celltypes == ct, ])]
-			}
-		CT_cluster <- RNAcounts[, celltypes == ct]
-	}else{
-		CT_cluster <- csv_data[, csv_cells[csv_cells[, 2] == ct, 1]]
+	subsetting_rownames <- NULL
+	subsetting_string_all <- NULL
+	metadata_comb_names <- NULL
+	combs_table <- as.matrix(expand.grid(metadata_values))
+	md_combo <- vector("character", length(nrow(combs_table)))
+	for(i in seq(nrow(combs_table))){
+		subsetting_string <- NULL;
+		metadata_names <- NULL
+		for(j in seq(ncol(combs_table))){
+			subsetting_string <- c(subsetting_string, "Sub[[\"", paste0(colnames(combs_table)[j], "\"]]==", "\"", combs_table[i, j], "\"", ifelse(j == ncol(combs_table), "", "&")));
+			metadata_names <- c(metadata_names, paste0(combs_table[i, j], "_"))
+		}
+		subsetting_string_all <- c(subsetting_string_all, paste(subsetting_string, collapse= ""))
+		metadata_comb_names <- c(metadata_comb_names, paste(metadata_names, collapse= ""))
+		md_combo_tmp <- subsetting_string_all[i]
+		for(idx in seq(length(metadata))){
+			md_combo_tmp <- gsub("\"", "", md_combo_tmp)
+			md_combo_tmp <- gsub(paste0("Sub\\[\\[", metadata[idx], "\\]\\]=="), "", md_combo_tmp)
+		}
+		md_combo[i] <- gsub("Sub\\[\\[|\\]\\]", "", gsub("&|==", "_", md_combo_tmp))
 	}
+	pdf(paste0(output_file, "/plots/", "mc_dendrogram.pdf"))
+	for(i in seq(length(subsetting_string_all))){
+		hits <- rownames(Sub@meta.data[eval(parse(text= subsetting_string_all[i])), ])
+		if(length(assay_slot)){
+			hits <- intersect(hits, rownames(Sub@meta.data[assays == "rna",]))
+		}
+		if(!length(hits)){
+			next;
+		}
+
+		## extract the metadata combo names from subsetting_string_all
+		
+		if(!csv_flag){
+			if(!length(assay_slot)){
+				#CT_cluster <- RNAcounts[, rownames(eval(parse(text= paste0(Rds_name, "@meta.data")))[celltypes == ct, ])]
+				CT_cluster <- RNAcounts[, hits]
+			}
+			CT_cluster <- RNAcounts[, hits] #subset the cells based on the current combination of metadata values
+			#CT_cluster <- CT_cluster[, rownames(eval(parse(text= paste0(Rds_name, "[[\"", metadata[md], "\"]]"))) == md_vals)]
+		}else{
+			CT_cluster <- csv_data[, csv_cells[csv_cells[, 2] == ct, 1]] ## this whole csv stuff are falling apart with this new implemntation of allowing to have multiple metadata variables to base the clustering on
+		}
 		original_CT_cluster <- CT_cluster
 		if(umap_flag){
-			CT_cluster <- t(umap_layout[celltypes == ct, ]) # I need to transform it bcuz the data gets transformed in the clara call
-			original_CT_cluster <- RNAcounts[, celltypes == ct]
+			CT_cluster <- t(umap_layout[hits, ]) # I need to transform it bcuz the data gets transformed in the clara call
+			original_CT_cluster <- RNAcounts[, hits]
 		}
-	print(c("dim(CT_cluster):", dim(CT_cluster)))
-	if(length(k)){
-		k <- as.integer(k)
-	}else{
-		k <- floor(ncol(CT_cluster) / expected_cells)
-			if(!k){
-				k <- ncol(CT_cluster)
-				print(paste("Setting k to", k))
-			}else{
-				print(paste("Setting k to", k))
-			}
-	}
-	if(summary_method == "kmed" || summary_method == "kmed_means"){
-		print(paste("k=", k, "ncol(CT_cluster)=", ncol(CT_cluster)))
-		#########################%%%%%%%%%%%%%%%%%%%^^^^^^^^^^^^^^^%%%%%%%%%%%%%%%%%%%###############
-		#########################%%%%%%%%%%%%%%%%%%%^^^^^^^^^^^^^^^%%%%%%%%%%%%%%%%%%%###############
-		#########################%%%%%%%%%%%%%%%%%%%^^^^^^^^^^^^^^^%%%%%%%%%%%%%%%%%%%###############
-			if(k >= ifelse(is.null(ncol(original_CT_cluster)), 1, ncol(original_CT_cluster))){
-				print("too small... gotta merge all cells into one metacell")
-				clusters[[ct]]$clustering <- rep(1, ifelse(is.null(ncol(original_CT_cluster)), 1, ncol(original_CT_cluster)))
-				cluster_data[[ct]] <- t(as.matrix(original_CT_cluster))
-				## When original_CT_cluster is a vector, it loses its colname. That's why I had to add the line below to extract the correct annotation, especially for the RNA_barcodes_ct later. However, this fix will only apply to Seurat input data, and not the csv data. N.B. I'm using RNAcounts to infer the names.
-				rownames(cluster_data[[ct]]) <- colnames(RNAcounts)[which(celltypes == ct)]
-				RNA_barcodes_ct <- c(RNA_barcodes_ct, rownames(cluster_data[[ct]]))
-		cell2metacell_info <- c(cell2metacell_info, paste(ct, clusters[[ct]]$clustering, sep= "_"))
+		print(c("dim(CT_cluster):", dim(CT_cluster)))
+		if(length(k)){
+			new_k <- as.integer(k)
+		}else{
+			new_k <- floor(ncol(CT_cluster) / expected_cells)
+				if(!new_k){
+					new_k <- ncol(CT_cluster)
+					print(paste("Setting k to", new_k))
+				}else{
+					print(paste("Setting k to", new_k))
+				}
+		}
+		if(summary_method == "kmed" || summary_method == "kmed_means"){
+			print(paste("k=", new_k, "ncol(CT_cluster)=", ncol(CT_cluster)))
+			#########################%%%%%%%%%%%%%%%%%%%^^^^^^^^^^^^^^^%%%%%%%%%%%%%%%%%%%###############
+			#########################%%%%%%%%%%%%%%%%%%%^^^^^^^^^^^^^^^%%%%%%%%%%%%%%%%%%%###############
+			#########################%%%%%%%%%%%%%%%%%%%^^^^^^^^^^^^^^^%%%%%%%%%%%%%%%%%%%###############
+				if(new_k >= ifelse(is.null(ncol(original_CT_cluster)), 1, ncol(original_CT_cluster))){
+					print("too small... gotta merge all cells into one metacell")
+					clusters[[md_combo[i]]]$clustering <- rep(1, ifelse(is.null(ncol(original_CT_cluster)), 1, ncol(original_CT_cluster)))
+					cluster_data[[md_combo[i]]] <- t(as.matrix(original_CT_cluster))
+					clusters[[md_combo[i]]]$data <- t(CT_cluster)
+					print(paste("dim(cluster_data)", dim(cluster_data[[md_combo[i]]])))
+					print(paste("length(clusters$clustering)", length(clusters[[md_combo[i]]]$clustering)))
+					if(merge_flag){
+						clusters[[md_combo[i]]]$clustering <- merge_small_mc(clusters[[md_combo[i]]]$clustering, thresh= expected_cells)
+					}
+					print(table(clusters[[md_combo[i]]]$clustering))
+					## When original_CT_cluster is a vector, it loses its colname. That's why I had to add the line below to extract the correct annotation, especially for the RNA_barcodes_ct later. However, this fix will only apply to Seurat input data, and not the csv data. N.B. I'm using RNAcounts to infer the names.
+					rownames(cluster_data[[md_combo[i]]]) <- colnames(RNAcounts[, hits])
+					RNA_barcodes_ct <- c(RNA_barcodes_ct, rownames(cluster_data[[md_combo[i]]]))
+					cell2metacell_info <- c(cell2metacell_info, paste(md_combo[i], clusters[[md_combo[i]]]$clustering, sep= "_"))
 
+					if(length(assay_slot)){
+						RNA_metacell_umap_ct <- NULL
+						for(j in unique(clusters[[md_combo[i]]]$clustering)){
+							data_subset <- RNA_umap[which(clusters[[md_combo[i]]]$clustering == j), ];
+							if(is.null(dim(data_subset))){
+								RNA_metacell_umap_ct <- rbind(RNA_metacell_umap_ct, data_subset);
+							}else{
+								RNA_metacell_umap_ct <- rbind(RNA_metacell_umap_ct, colMeans(data_subset))
+							}
+						}
+						rownames(RNA_metacell_umap_ct) <- paste(md_combo[i], unique(clusters[[md_combo[i]]]$clustering), sep= "_")
+						print(paste("Done clustering", md_combo[i]))
+						RNA_metacell_umap <- rbind(RNA_metacell_umap, RNA_metacell_umap_ct)
+					}
+					### merge all cells into one metacell
+				}else if(length(new_k) >0 && new_k < ncol(CT_cluster)){
+					clara_out <- invoke_clara_simplified(CT_cluster, new_k)
+					mc_qual <- metacell_quality(clara_out$clusters, expected_cell_num= expected_cells, slack_ratio= .15)
+					outlier_idx <- get_outliers(clara_out$clusters, 10)
+					print(c("Pass:", pass_num, "valid metacells:", length(which(mc_qual == T)), "outliers:", length(outlier_idx)))
+					mc_quality_info[[md_combo[i]]][[pass_num]] <- length(which(mc_qual == T))
+					mc_outlier_info[[md_combo[i]]][[pass_num]] <- length(outlier_idx)
+					mc_distr[[md_combo[i]]][[pass_num]] <- clara_out$clusters$clustering
+					## Plot heatmap
+					ann_col <- data.frame(metacells= factor(clara_out$clusters$clustering))
+					rownames(ann_col) <- seq(ncol((CT_cluster)))
+					colnames(CT_cluster) <- seq(ncol((CT_cluster)))
+					###############
+					cluster_data[[md_combo[i]]] <- t(as.matrix(original_CT_cluster))
+					## plot the metacell count table with a dendrogram obtained from mean clusters
+					cluster_means_res <- cluster_means(clara_out$clusters)
+					print(paste("dim(cluster_means_res):", dim(cluster_means_res)))
+					tryCatch(
+						{
+							hc_res <- hclust(d = dist(x = cluster_means_res))
+							df <- data.frame(table(clara_out$clusters$clustering));
+							df$y <- as.factor(rep(1, nrow(df)))
+							df_ordered <- df[hc_res$order, ]
+							df_ordered$Var1 <- factor(df_ordered$Var1, levels= df_ordered$Var1)
+							p1 <- ggplot2::ggplot(df_ordered, ggplot2::aes(y= Var1, x= y)) + geom_tile(show.legend= F, color= "gray", fill= "white") + theme_classic() + geom_text(ggplot2::aes(label= Freq), size= 1) + theme(axis.text = element_text(size = 3)) + theme(axis.text.y = element_text(size = rel(1), hjust = 1, angle = 0), 
+								# margin: top, right, bottom, and left ->  plot.margin = unit(c(1, 0.2, 0.2, -0.5), "cm"), 
+								panel.grid.minor = element_blank()) + ggtitle(md_combo[i])
+							p2 <- ggdendrogram(data = as.dendrogram(hc_res), rotate= T, segments= T, leaf_labels= F) + geom_text(size= 1)
+							print(plot_grid(p1, p2, rel_widths=c(.25, 1), ncol= 2))#align= "h"
+						},
+						error= function(e){
+							message(paste("dim(cluster_means_res):", dim(cluster_means_res)))
+							message(e)
+						}
+					)
+					## update k after removing outliars
+					ks_info[[md_combo[i]]][[pass_num]] <- new_k
+					new_k <- floor(ncol(CT_cluster) / expected_cells)
+				
+					#clust <- makeCluster(ceiling(detectCores()/2))
+					clusters[[md_combo[i]]] <- clara_out$clusters
+					print(table(clusters[[md_combo[i]]]$clustering))
+					if(merge_flag){
+						clusters[[md_combo[i]]]$clustering <- merge_small_mc(clusters[[md_combo[i]]]$clustering, thresh= expected_cells)
+					}
+					print(table(clusters[[md_combo[i]]]$clustering))
+				}
+				
+				
 				if(length(assay_slot)){
 					RNA_metacell_umap_ct <- NULL
-					for(i in unique(clusters[[ct]]$clustering)){
-						data_subset <- RNA_umap[which(clusters[[ct]]$clustering == i), ];
+					for(j in unique(clusters[[md_combo[i]]]$clustering)){
+						#data_subset <- RNA_umap[which(clusters[[ct]]$clustering == i), ];
+						data_subset <- clusters[[md_combo[i]]]$data[which(clusters[[md_combo[i]]]$clustering == j), ];
 						if(is.null(dim(data_subset))){
 							RNA_metacell_umap_ct <- rbind(RNA_metacell_umap_ct, data_subset);
 						}else{
 							RNA_metacell_umap_ct <- rbind(RNA_metacell_umap_ct, colMeans(data_subset))
 						}
 					}
-					rownames(RNA_metacell_umap_ct) <- paste(ct, unique(clusters[[ct]]$clustering), sep= "_")
-					print(paste("Done clustering", ct))
+					rownames(RNA_metacell_umap_ct) <- paste(md_combo[i], unique(clusters[[md_combo[i]]]$clustering), sep= "_")
+					print(paste("Done clustering", md_combo[i]))
 					RNA_metacell_umap <- rbind(RNA_metacell_umap, RNA_metacell_umap_ct)
+					RNA_metacell_umap_plot[[md_combo[i]]] <- RNA_metacell_umap_ct
 				}
-				### merge all cells into one metacell
-			}else if(length(k) >0 && k < ncol(CT_cluster)){
-				clara_out <- invoke_clara_simplified(CT_cluster, k)
-				mc_qual <- metacell_quality(clara_out$clusters, expected_cell_num= expected_cells, slack_ratio= .15)
-				outlier_idx <- get_outliers(clara_out$clusters, 10)
-				print(c("Pass:", pass_num, "valid metacells:", length(which(mc_qual == T)), "outliers:", length(outlier_idx)))
-				mc_quality_info[[ct]][[pass_num]] <- length(which(mc_qual == T))
-				mc_outlier_info[[ct]][[pass_num]] <- length(outlier_idx)
-				mc_distr[[ct]][[pass_num]] <- clara_out$clusters$clustering
-				## Plot heatmap
-				ann_col <- data.frame(metacells= factor(clara_out$clusters$clustering))
-				rownames(ann_col) <- seq(ncol((CT_cluster)))
-				colnames(CT_cluster) <- seq(ncol((CT_cluster)))
-				###############
-				cluster_data[[ct]] <- t(as.matrix(original_CT_cluster))
-				## plot the metacell count table with a dendrogram obtained from mean clusters
-				cluster_means_res <- cluster_means(clara_out$clusters)
-				print(paste("dim(cluster_means_res):", dim(cluster_means_res)))
-				tryCatch(
-					 {
-						hc_res <- hclust(d = dist(x = cluster_means_res))
-						df <- data.frame(table(clara_out$clusters$clustering));
-						df$y <- as.factor(rep(1, nrow(df)))
-						df_ordered <- df[hc_res$order, ]
-						df_ordered$Var1 <- factor(df_ordered$Var1, levels= df_ordered$Var1)
-						p1 <- ggplot2::ggplot(df_ordered, ggplot2::aes(y= Var1, x= y)) + geom_tile(show.legend= F, color= "gray", fill= "white") + theme_classic() + geom_text(ggplot2::aes(label= Freq), size= 1) + theme(axis.text = element_text(size = 3)) + theme(axis.text.y = element_text(size = rel(1), hjust = 1, angle = 0), 
-							# margin: top, right, bottom, and left ->  plot.margin = unit(c(1, 0.2, 0.2, -0.5), "cm"), 
-							panel.grid.minor = element_blank()) + ggtitle(ct)
-						p2 <- ggdendrogram(data = as.dendrogram(hc_res), rotate= T, segments= T, leaf_labels= F) + geom_text(size= 1)
-						print(plot_grid(p1, p2, rel_widths=c(.25, 1), ncol= 2))#align= "h"
-					},
-					error= function(e){
-						message(paste("dim(cluster_means_res):", dim(cluster_means_res)))
-						message(e)
-					}
-				)
-				## update k after removing outliars
-				ks_info[[ct]][[pass_num]] <- k
-				k <- floor(ncol(CT_cluster) / expected_cells)
-			}
-			#clust <- makeCluster(ceiling(detectCores()/2))
-			clusters[[ct]] <- clara_out$clusters
-			if(merge_flag){
-				clusters[[ct]]$clustering <- merge_small_mc(clusters[[ct]]$clustering, thresh= expected_cells)
-			}
-			print(table(clusters[[ct]]$clustering))
-			if(length(assay_slot)){
-				RNA_metacell_umap_ct <- NULL
-				for(i in unique(clusters[[ct]]$clustering)){
-					#data_subset <- RNA_umap[which(clusters[[ct]]$clustering == i), ];
-					data_subset <- clusters[[ct]]$data[which(clusters[[ct]]$clustering == i), ];
-					if(is.null(dim(data_subset))){
-						RNA_metacell_umap_ct <- rbind(RNA_metacell_umap_ct, data_subset);
-					}else{
-						RNA_metacell_umap_ct <- rbind(RNA_metacell_umap_ct, colMeans(data_subset))
-					}
-				}
-				rownames(RNA_metacell_umap_ct) <- paste(ct, unique(clusters[[ct]]$clustering), sep= "_")
-				print(paste("Done clustering", ct))
-				RNA_metacell_umap <- rbind(RNA_metacell_umap, RNA_metacell_umap_ct)
-				RNA_metacell_umap_plot[[ct]] <- RNA_metacell_umap_ct
-			}
-			RNA_barcodes_ct <- c(RNA_barcodes_ct, rownames(cluster_data[[ct]]))
-			cell2metacell_info <- c(cell2metacell_info, paste(ct, clusters[[ct]]$clustering, sep= "_"))
-			
-		#########################%%%%%%%%%%%%%%%%%%%^^^^^^^^^^^^^^^%%%%%%%%%%%%%%%%%%%###############
-		#########################%%%%%%%%%%%%%%%%%%%^^^^^^^^^^^^^^^%%%%%%%%%%%%%%%%%%%###############
-		#########################%%%%%%%%%%%%%%%%%%%^^^^^^^^^^^^^^^%%%%%%%%%%%%%%%%%%%###############
-	}else if(summary_method == "kmeans"){
-		if(length(k) > 0 && k > 3){
-		print(dim(CT_cluster))
-		if(class(CT_cluster) == "numeric"){
-			next;
+				RNA_barcodes_ct <- c(RNA_barcodes_ct, rownames(cluster_data[[md_combo[i]]]))
+				cell2metacell_info <- c(cell2metacell_info, paste(md_combo[i], clusters[[md_combo[i]]]$clustering, sep= "_"))
+				
+			#########################%%%%%%%%%%%%%%%%%%%^^^^^^^^^^^^^^^%%%%%%%%%%%%%%%%%%%###############
+			#########################%%%%%%%%%%%%%%%%%%%^^^^^^^^^^^^^^^%%%%%%%%%%%%%%%%%%%###############
+			#########################%%%%%%%%%%%%%%%%%%%^^^^^^^^^^^^^^^%%%%%%%%%%%%%%%%%%%###############
 		}
-		clusters[[ct]] <- kmeans(t(as.matrix(CT_cluster)), k)
-				cell2metacell_info <- c(cell2metacell_info, paste(ct, clusters[[ct]]$clustering, sep= "_"))
+		else{
+			error("Undefined method of summarization. Please pick either kmed, kmeans, or kmed_means!")
 		}
-	}
-	else{
-		error("Undefined method of summarization. Please pick either kmed, kmeans, or kmed_means!")
-	}
+	
 	}
 	dev.off()
 	save(ks_info, mc_distr, mc_quality_info, mc_outlier_info, cluster_data, clusters, file= paste0(output_file, "/debug/clusters_debug.Rdata"))
@@ -447,50 +493,52 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL){
 	mat_sum <- NULL
 	mc_names <- NULL
 	for(i in seq(length(clusters))){
-	if(summary_method == "kmed"){
-		mat <- cbind(mat, t(clusters[[i]]$medoids))
-	}else if(summary_method == "kmeans"){
-		mat <- cbind(mat, t(clusters[[i]]$centers))
-	}
-	else{##kmed_means
-		temp_cl <- NULL
-		temp_cl_sum <- NULL
-			if(umap_flag){
-				for(clst in unique(clusters[[i]]$clustering)){
-					idx <- which(clusters[[i]]$cluster == clst)
-					mc_names <- c(mc_names, paste0(names(clusters)[i], "_", clst))
-					if("numeric" %in% class(cluster_data[[i]][idx, ])){
-						temp_cl <- rbind(temp_cl, cluster_data[[i]][idx, ])
-						temp_cl_sum <- rbind(temp_cl_sum, cluster_data[[i]][idx, ])
-					}else{
-						temp_cl <- rbind(temp_cl, apply(cluster_data[[i]][idx, ], 2, FUN= mean))
-						temp_cl_sum <- rbind(temp_cl_sum, apply(cluster_data[[i]][idx, ], 2, FUN= sum))
-					}
-				}
-			}else{
-			for(clst in unique(clusters[[i]]$clustering)){
-					idx <- which(clusters[[i]]$cluster == clst)
-			if("numeric" %in% class(clusters[[i]]$data[idx, ])){
-				temp_cl <- rbind(temp_cl, clusters[[i]]$data[idx, ])
-				temp_cl_sum <- rbind(temp_cl_sum, clusters[[i]]$data[idx, ])
-			}
-			else{
+		if(summary_method == "kmed"){
+			mat <- cbind(mat, t(clusters[[i]]$medoids))
+		}else if(summary_method == "kmeans"){
+			mat <- cbind(mat, t(clusters[[i]]$centers))
+		}
+		else{##kmed_means
+			temp_cl <- NULL
+			temp_cl_sum <- NULL
+				if(umap_flag){
+					for(clst in unique(clusters[[i]]$clustering)){
 						idx <- which(clusters[[i]]$cluster == clst)
-				temp_cl <- rbind(temp_cl, apply(clusters[[i]]$data[idx, ], 2, FUN= mean))
-				temp_cl_sum <- rbind(temp_cl_sum, apply(clusters[[i]]$data[idx, ], 2, FUN= sum))
-			}
-			}
-			}
-		mat <- cbind(mat, t(temp_cl))
-		mat_sum <- cbind(mat_sum, t(temp_cl_sum))
-	}
+						mc_names <- c(mc_names, paste0(names(clusters)[i], "_", clst))
+						if("numeric" %in% class(cluster_data[[i]][idx, ])){
+							temp_cl <- rbind(temp_cl, cluster_data[[i]][idx, ])
+							temp_cl_sum <- rbind(temp_cl_sum, cluster_data[[i]][idx, ])
+						}else{
+							temp_cl <- rbind(temp_cl, apply(cluster_data[[i]][idx, ], 2, FUN= mean))
+							temp_cl_sum <- rbind(temp_cl_sum, apply(cluster_data[[i]][idx, ], 2, FUN= sum))
+						}
+					}
+				}else{
+				for(clst in unique(clusters[[i]]$clustering)){
+						idx <- which(clusters[[i]]$cluster == clst)
+				if("numeric" %in% class(clusters[[i]]$data[idx, ])){
+					temp_cl <- rbind(temp_cl, clusters[[i]]$data[idx, ])
+					temp_cl_sum <- rbind(temp_cl_sum, clusters[[i]]$data[idx, ])
+				}
+				else{
+							idx <- which(clusters[[i]]$cluster == clst)
+					temp_cl <- rbind(temp_cl, apply(clusters[[i]]$data[idx, ], 2, FUN= mean))
+					temp_cl_sum <- rbind(temp_cl_sum, apply(clusters[[i]]$data[idx, ], 2, FUN= sum))
+				}
+				}
+				}
+			mat <- cbind(mat, t(temp_cl))
+			mat_sum <- cbind(mat_sum, t(temp_cl_sum))
+		}
 	}
 
 	print("done making mat")
 
 	colnames(mat) <- colnames(mat_sum) <- mc_names
+	print("saving...")
+	save(mat, mat_sum, file= paste0(output_file, "/debug/mat.RData"))
+	print("done saving!")
 	## Normalize the average metacell read counts by sequencing depth to compute the CPM values
-	#mat_norm <- mat/matrix(rep(colSums(mat), times= nrow(mat)), byrow = T, nrow = nrow(mat)) * 10^6 ## my version
 	dds <- DESeq2::DESeqDataSetFromMatrix(mat_sum, S4Vectors::DataFrame(colnames(mat_sum)), ~1);
 	dds <- DESeq2::DESeq(dds);
 	write.table(DESeq2::sizeFactors(dds), paste0(output_file, "/debug/DESeq2_sizeFactors.txt"))
@@ -518,7 +566,7 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL){
 
 	celltypes <- sapply(colnames(mat), function(i) strsplit(i, "_")[[1]][1])
 	df <- data.frame(UMAP1= final_umap_res[, 1], UMAP2= final_umap_res[, 2], celltype= celltypes)
-	pdf(paste0(output_file, "/plots/umap_", summary_method, ".pdf"))
+	pdf(paste0(output_file, "/plots/umap", ".pdf"))
 	print(ggplot2::ggplot(df, ggplot2::aes(x= UMAP1, y= UMAP2)) + ggplot2::geom_point(ggplot2::aes(color= celltype)) + ggplot2::theme_classic() + ggplot2::geom_text(ggplot2::aes(label= celltype),hjust=0, vjust=0, size= 3, check_overlap = T))
 	dev.off()
 	##############################
@@ -533,22 +581,23 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL){
 		print("Finished classifying the ATAC cells")
 		#atac2metacell_info <- data.frame(barcode= rownames(ATAC_umap), metacell= knn_res) ## the sorting of the distances in the my_knn function causes the rownames not to match anymore. therefore, I'm commenting this line and changing to the following
 		atac2metacell_info <- data.frame(barcode= names(knn_res), metacell= knn_res)
-		write.csv(atac2metacell_info, paste0(output_file, "/results/ATAC_cell2metacell_info_", summary_method, ".csv"), row.names= F)
+		write.csv(atac2metacell_info, paste0(output_file, "/results/ATAC_cell2metacell_info", ".csv"), row.names= F)
+	
+
+		train <- RNA_metacell_umap
+		test <- ATAC_umap
+		colnames(train) <- NULL
+		colnames(test) <- NULL                                                                                                                                   
+		df <- data.frame(train, assay= "mcRNA", celltype= sapply(rownames(train), function(i)strsplit(i, "_")[[1]][1]))
+		df <- rbind(df, data.frame(test, assay= "scATAC", celltype= "unlabled"))
+		colnames(df)[seq(ncol(train))] <- paste0("UMAP", seq(ncol(train)))
+
+		library(viridis)
+		pdf(paste0(output_file, "/plots/mcRNA_ATAC_UMAP.pdf"))
+
+		print(ggplot2::ggplot(df, ggplot2::aes(x= UMAP1, y= UMAP2, shape= assay, colour= celltype, label= celltype)) + ggplot2::geom_point(alpha= .5) + ggplot2::ggtitle("UMAP of mcRNAs vs scATACs") + ggplot2::geom_text(ggplot2::aes(label= ifelse(celltype != "unlabled", as.character(celltype), '')), hjust=0, vjust=0, size= 3, check_overlap = T) + viridis::scale_color_viridis(discrete=TRUE) + ggplot2::theme_bw())
+		dev.off()
 	}
-
-	train <- RNA_metacell_umap
-	test <- ATAC_umap
-	colnames(train) <- NULL
-	colnames(test) <- NULL                                                                                                                                   
-	df <- data.frame(train, assay= "mcRNA", celltype= sapply(rownames(train), function(i)strsplit(i, "_")[[1]][1]))
-	df <- rbind(df, data.frame(test, assay= "scATAC", celltype= "unlabled"))
-	colnames(df)[seq(ncol(train))] <- paste0("UMAP", seq(ncol(train)))
-
-	library(viridis)
-	pdf(paste0(output_file, "/plots/mcRNA_ATAC_UMAP.pdf"))
-	print(ggplot2::ggplot(df, ggplot2::aes(x= UMAP1, y= UMAP2, shape= assay, colour= celltype, label= celltype)) + ggplot2::geom_point(alpha= .5) + ggplot2::ggtitle("UMAP of mcRNAs vs scATACs") + ggplot2::geom_text(ggplot2::aes(label= ifelse(celltype != "unlabled", as.character(celltype), '')), hjust=0, vjust=0, size= 3, check_overlap = T) + viridis::scale_color_viridis(discrete=TRUE) + ggplot2::theme_bw())
-	dev.off()
-
 
 	if(length(gtf_file)){
 	## Compute TPM on normalized metacells ## Following the suggestion here: biostars.org/p/456800/
@@ -577,27 +626,23 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL){
 		expr_mat_df <- expr_mat_df[, -which(colnames(expr_mat_df) == "exonic_len")]
 		norm_len <- expr_mat_df / matrix(rep(exonic.gene.sizes.expr, each= ncol(expr_mat_df)), ncol= ncol(expr_mat_df), byrow= T)
 		tpm.mat <- t( t(norm_len) * 1e6 / colSums(norm_len) )
-		write.csv(tpm.mat, paste0(output_file, "/results/cellSummarized_normalized_TPM_", summary_method, ".csv"))
+		write.csv(tpm.mat, paste0(output_file, "/results/cellSummarized_normalized_TPM", ".csv"))
 
 	}
 	rna2metacell_info <- data.frame(barcode= RNA_barcodes_ct, metacell= cell2metacell_info)
-	write.csv(rna2metacell_info, paste0(output_file, "/results/RNA_cell2metacell_info_", summary_method, ".csv"), row.names= F)
-	write.csv(mat, paste0(output_file, "/results/cellSummarized_", summary_method, ".csv"))
-	write.csv(normalized_counts_all, paste0(output_file, "/results/cellSummarized_normalized_", summary_method, ".csv"))
-	write.csv(mat_sum, paste0(output_file, "/results/cellSummarized_", summary_method, "_sum.csv"))
-	write.csv(final_umap_res, paste0(output_file, "/results/RNA_metacell_umap_", summary_method, ".csv"))
+	write.csv(rna2metacell_info, paste0(output_file, "/results/RNA_cell2metacell_info", ".csv"), row.names= F)
+	write.csv(mat, paste0(output_file, "/results/cellSummarized", ".csv"))
+	write.csv(normalized_counts_all, paste0(output_file, "/results/cellSummarized_normalized", ".csv"))
+	write.csv(mat_sum, paste0(output_file, "/results/cellSummarized", "_sum.csv"))
+	write.csv(final_umap_res, paste0(output_file, "/results/RNA_metacell_umap", ".csv"))
 	if(length(assay_slot)){
-		save(atac2metacell_info, ATACcounts, clusters, RNA_metacell_umap, ATAC_umap, mc_names, file= paste0(output_file, "/", summary_method, "_clustered.RData"))
+		save(atac2metacell_info, ATACcounts, clusters, RNA_metacell_umap, ATAC_umap, mc_names, file= paste0(output_file, "/debug/", "clustered.RData"))
 
 		uniq_mc <- unique(atac2metacell_info$metacell)
 		atac_metacell <- NULL;
 		atac_metacell_sum <- NULL;
-		print(sessionInfo())
 		for(i in seq(length(uniq_mc))){
 			hits <- atac2metacell_info$barcode[which(atac2metacell_info$metacell == uniq_mc[i])];
-			print(i)
-			print(class(ATACcounts))
-			print(dim(ATACcounts))
 			if(length(hits) > 1){
 				atac_metacell <- cbind(atac_metacell, Matrix::rowMeans(ATACcounts[, hits]))
 				#atac_metacell <- cbind(atac_metacell, apply(ATACcounts[, hits]), 2, apply= mean)
@@ -610,8 +655,9 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL){
 		colnames(atac_metacell) <- uniq_mc
 		colnames(atac_metacell_sum) <- uniq_mc
 		if(normalization_flag){
-			atac_metacell_sum[which(atac_metacell_sum == 0)] <- 1 ## If a cell had zero reads across all peaks, I assign a non-zero value to that total reads to avoid division by zero
+			#atac_metacell_sum[which(atac_metacell_sum == 0)] <- 1 ## If a cell had zero reads across all peaks, I assign a non-zero value to that total reads to avoid division by zero
 			total_ATAC <- colSums(atac_metacell_sum)
+			total_ATAC[which(total_ATAC == 0)] <- 1
 			#ATACcounts_depthNorm <- ATACcounts / matrix(rep(total_ATAC, times= nrow(ATACcounts)), nrow= ATACcounts, byrow= T)
 			ATACcounts_depthNorm <- t(t(atac_metacell_sum) / total_ATAC)
 			ATACcounts_depthNorm <- ATACcounts_depthNorm * 1e6
@@ -621,15 +667,15 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL){
 			plot(log2(1 + rowMeans(atac_metacell_sum)), log2(1 + Matrix::rowMeans(ATACcounts)), xlab= "log2(1 + avg depth normalized)", ylab= "log2(1 + raw)", main= "ATAC", pch= 20)
 			dev.off()
 		}
-		write.csv(atac_metacell, paste0(output_file, "/results/cellSummarized_ATAC_", summary_method, ".csv"))
-		write.csv(atac_metacell_sum, paste0(output_file, "/results/cellSummarized_ATAC_", summary_method, "_sum.csv"))
+		write.csv(atac_metacell, paste0(output_file, "/results/cellSummarized_ATAC", ".csv"))
+		write.csv(atac_metacell_sum, paste0(output_file, "/results/cellSummarized_ATAC", "_sum.csv"))
 	}
 	print("Done!")
 	Rtnse_plot <- F
 	if(Rtnse_plot){
 	library(Rtsne)
 	Rtsne_whole_res <- Rtsne(as.matrix(RNAcounts), check_duplicates= F)
-	pdf(paste0(output_file, "/plots/tSNE_", summary_method, "_Rtsne.pdf"))
+	pdf(paste0(output_file, "/plots/tSNE", "_Rtsne.pdf"))
 	plot(Rtsne_whole_res$Y)
 	dev.off()
 	}
@@ -734,3 +780,4 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL){
 		}
 	}
 }
+
