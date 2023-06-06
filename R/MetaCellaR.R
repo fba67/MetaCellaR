@@ -719,7 +719,11 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL, met
 	df_mc_code <- NULL;
 
 	for(i in names(RNA_metacell_umap_plot)){
-		df_mc_code <- rbind(df_mc_code, data.frame(umap1= clusters[[i]]$data[, 1], umap2= clusters[[i]]$data[, 2], type= "scRNA", celltype= i));
+		if(ncol(clusters[[i]]$data) > 1){## in case of having only one data point for the given subset, the dimension of the data gets swapped and I have to catch this exception with this if condition
+			df_mc_code <- rbind(df_mc_code, data.frame(umap1= clusters[[i]]$data[, 1], umap2= clusters[[i]]$data[, 2], type= "scRNA", celltype= i));
+		}else{
+			df_mc_code <- rbind(df_mc_code, data.frame(umap1= clusters[[i]]$data[1, ], umap2= clusters[[i]]$data[2, ], type= "scRNA", celltype= i));
+		}
 		df_mc_code <- rbind(df_mc_code, data.frame(umap1= RNA_metacell_umap_plot[[i]][, 1], umap2= RNA_metacell_umap_plot[[i]][, 2], type= "mcRNA", celltype= i))
 	}
 	pdf(paste0(output_file, "/plots/mcRNA_vs_scRNA_UMAP.pdf")); print(ggplot2::ggplot(df_mc_code, ggplot2::aes(x= umap1, y= umap2, colour= celltype, shape= type)) + geom_point());
