@@ -198,7 +198,7 @@ merge_small_mc <- function(clustering, thresh= 30){
 #' @export
 
 metacellar.run <- function(summary_method = "kmed_means", csv_flag = F,
-merge_flag = T, normalization_flag = T, reduction = "umap", file_name, gtf_file,
+merge_flag = T, normalization_flag = T, reduction = "umap", file_name, gtf_file = NULL,
 umap_flag = F, RNA_count_slot, ATAC_count_slot, celltype_info, assay_slot, output_file = getwd(),
 expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL, metadata= c()){
 	summary_method <- "kmed_means" #kmed
@@ -378,7 +378,7 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL, met
 			#########################%%%%%%%%%%%%%%%%%%%^^^^^^^^^^^^^^^%%%%%%%%%%%%%%%%%%%###############
 			#########################%%%%%%%%%%%%%%%%%%%^^^^^^^^^^^^^^^%%%%%%%%%%%%%%%%%%%###############
 				if(new_k >= ifelse(is.null(ncol(original_CT_cluster)), 1, ncol(original_CT_cluster))){
-					print("too small... gotta merge all cells into one metacell")
+					print("too small... merging all cells into one metacell")
 					clusters[[md_combo[i]]]$clustering <- rep(1, ifelse(is.null(ncol(original_CT_cluster)), 1, ncol(original_CT_cluster)))
 					cluster_data[[md_combo[i]]] <- t(as.matrix(original_CT_cluster))
 					clusters[[md_combo[i]]]$data <- t(CT_cluster)
@@ -389,7 +389,11 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL, met
 					}
 					print(table(clusters[[md_combo[i]]]$clustering))
 					## When original_CT_cluster is a vector, it loses its colname. That's why I had to add the line below to extract the correct annotation, especially for the RNA_barcodes_ct later. However, this fix will only apply to Seurat input data, and not the csv data. N.B. I'm using RNAcounts to infer the names.
-					rownames(cluster_data[[md_combo[i]]]) <- colnames(RNAcounts[, hits])
+					if(length(hits) == 1){
+						rownames(cluster_data[[md_combo[i]]]) <- hits # names(RNAcounts[, hits])
+					}else{
+						rownames(cluster_data[[md_combo[i]]]) <- colnames(RNAcounts[, hits])
+					}
 					RNA_barcodes_ct <- c(RNA_barcodes_ct, rownames(cluster_data[[md_combo[i]]]))
 					cell2metacell_info <- c(cell2metacell_info, paste(md_combo[i], clusters[[md_combo[i]]]$clustering, sep= "_"))
 
@@ -461,7 +465,11 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL, met
 					RNA_metacell_umap_ct <- NULL
 					for(j in unique(clusters[[md_combo[i]]]$clustering)){
 						#data_subset <- RNA_umap[which(clusters[[ct]]$clustering == i), ];
-						data_subset <- clusters[[md_combo[i]]]$data[which(clusters[[md_combo[i]]]$clustering == j), ];
+						if(is.null(nrow(clusters[[md_combo[i]]]$data[which(clusters[[md_combo[i]]]$clustering == j), ]))){
+							data_subset <- clusters[[md_combo[i]]]$data[, which(clusters[[md_combo[i]]]$clustering == j)];
+						}else{
+							data_subset <- clusters[[md_combo[i]]]$data[which(clusters[[md_combo[i]]]$clustering == j), ];
+						}
 						if(is.null(dim(data_subset))){
 							RNA_metacell_umap_ct <- rbind(RNA_metacell_umap_ct, data_subset);
 						}else{
@@ -486,7 +494,7 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL, met
 	
 	}
 	dev.off()
-	save(ks_info, mc_distr, mc_quality_info, mc_outlier_info, cluster_data, clusters, file= paste0(output_file, "/debug/clusters_debug.Rdata"))
+	save(RNA_barcodes_ct, cell2metacell_info, ks_info, mc_distr, mc_quality_info, mc_outlier_info, cluster_data, clusters, file= paste0(output_file, "/debug/clusters_debug.Rdata"))
 	print("Done clustering!")
 
 	mat <- NULL
@@ -535,39 +543,52 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL, met
 	print("done making mat")
 
 	colnames(mat) <- colnames(mat_sum) <- mc_names
+	if(!normalization_flag){
+		write.csv(mat, paste0(output_file, "/results/RNA_cellSummarized_normalized", ".csv"))
+		write.csv(mat_sum, paste0(output_file, "/results/RNA_cellSummarized_normalized_sum", ".csv"))
+	}
+
 	print("saving...")
 	save(mat, mat_sum, file= paste0(output_file, "/debug/mat.RData"))
 	print("done saving!")
 	## Normalize the average metacell read counts by sequencing depth to compute the CPM values
-	dds <- DESeq2::DESeqDataSetFromMatrix(mat_sum, S4Vectors::DataFrame(colnames(mat_sum)), ~1);
-	dds <- DESeq2::DESeq(dds);
-	write.table(DESeq2::sizeFactors(dds), paste0(output_file, "/debug/DESeq2_sizeFactors.txt"))
-	normalized_counts_all <- DESeq2::counts(dds, normalized=TRUE)
-	cors <- sapply(seq(nrow(normalized_counts_all)), function(i)cor(as.numeric(mat_sum[i, ]), as.numeric(normalized_counts_all[i, ])))
-	inspect_genes <- which(cors > .4 & cors < .6)[seq(5)]
-	inspect_genes <- na.omit(inspect_genes)
-	print(c("inspect_genes:", inspect_genes))
-	pdf(paste0(output_file, "/plots/RNA_DESeq2_inspection.pdf"))
-	print(ggplot2::ggplot(data.frame(size_factor= DESeq2::sizeFactors(dds))) + ggplot2::geom_violin(ggplot2::aes(x= "DESeq2", y= size_factor)) + ggplot2::theme_classic())
-	print(ggplot2::ggplot(data.frame(correlation = cors)) + ggplot2::geom_violin(ggplot2::aes(x= "normalized vs raw", y= correlation)) + ggplot2::theme_classic())
-	plot(log2(1 + rowMeans(normalized_counts_all)), log2(1 + rowMeans(mat_sum)), xlab= "log2(1 + avg. DESeq2 normalized)", ylab= "log2(1 + avg. raw)", pch=20, main= "RNA")
-	if(length(inspect_genes)){
-		for(i in inspect_genes){
-			df <- data.frame(DESeq2= log2(1 + normalized_counts_all[i, ]), raw= log2(1 + mat_sum[i,]))
-			pheatmap::pheatmap(df, main= rownames(normalized_counts_all)[i])
+	if(normalization_flag){
+		dds <- DESeq2::DESeqDataSetFromMatrix(mat_sum, S4Vectors::DataFrame(colnames(mat_sum)), ~1);
+		dds <- DESeq2::DESeq(dds);
+		write.table(DESeq2::sizeFactors(dds), paste0(output_file, "/debug/DESeq2_sizeFactors.txt"))
+		normalized_counts_all <- DESeq2::counts(dds, normalized=TRUE)
+		cors <- sapply(seq(nrow(normalized_counts_all)), function(i)cor(as.numeric(mat_sum[i, ]), as.numeric(normalized_counts_all[i, ])))
+		inspect_genes <- which(cors > .4 & cors < .6)[seq(5)]
+		inspect_genes <- na.omit(inspect_genes)
+		print(c("inspect_genes:", inspect_genes))
+		pdf(paste0(output_file, "/plots/RNA_DESeq2_inspection.pdf"))
+		print(ggplot2::ggplot(data.frame(size_factor= DESeq2::sizeFactors(dds))) + ggplot2::geom_violin(ggplot2::aes(x= "DESeq2", y= size_factor)) + ggplot2::theme_classic())
+		print(ggplot2::ggplot(data.frame(correlation = cors)) + ggplot2::geom_violin(ggplot2::aes(x= "normalized vs raw", y= correlation)) + ggplot2::theme_classic())
+		plot(log2(1 + rowMeans(normalized_counts_all)), log2(1 + rowMeans(mat_sum)), xlab= "log2(1 + avg. DESeq2 normalized)", ylab= "log2(1 + avg. raw)", pch=20, main= "RNA")
+		if(length(inspect_genes)){
+			for(i in inspect_genes){
+				df <- data.frame(DESeq2= log2(1 + normalized_counts_all[i, ]), raw= log2(1 + mat_sum[i,]))
+				pheatmap::pheatmap(df, main= rownames(normalized_counts_all)[i])
+			}
 		}
+		dev.off()
 	}
-	dev.off()
 	##############################
 	##############################
 	final_umap_res <- uwot::umap(t(mat), pca= 30, pca_center= T, scale= T, n_components= umap_dim)
 	rownames(final_umap_res) <- colnames(mat)
 	colnames(final_umap_res) <- paste0("UMAP", seq(umap_dim))
 
-	celltypes <- sapply(colnames(mat), function(i) strsplit(i, "_")[[1]][1])
-	df <- data.frame(UMAP1= final_umap_res[, 1], UMAP2= final_umap_res[, 2], celltype= celltypes)
+	#celltypes <- sapply(colnames(mat), function(i) strsplit(i, "_")[[1]][1])
+	metadata_ann <- sub("_[^_]+$", "", colnames(mat))
+	metadata_tokens <- sapply(metadata_ann, function(i) strsplit(i, "_")[[1]])
+
+
 	pdf(paste0(output_file, "/plots/umap", ".pdf"))
-	print(ggplot2::ggplot(df, ggplot2::aes(x= UMAP1, y= UMAP2)) + ggplot2::geom_point(ggplot2::aes(color= celltype)) + ggplot2::theme_classic() + ggplot2::geom_text(ggplot2::aes(label= celltype),hjust=0, vjust=0, size= 3, check_overlap = T))
+	for(j in seq(length(metadata))){
+		df <- data.frame(UMAP1= final_umap_res[, 1], UMAP2= final_umap_res[, 2], metadata= sapply(metadata_ann, function(i) strsplit(i, "_")[[1]][j]))
+		print(ggplot2::ggplot(df, ggplot2::aes(x= UMAP1, y= UMAP2)) + ggplot2::geom_point(ggplot2::aes(color= metadata)) + ggplot2::theme_classic() + ggplot2::geom_text(ggplot2::aes(label= metadata),hjust=0, vjust=0, size= 3, check_overlap = T))
+	}
 	dev.off()
 	##############################
 	##############################
@@ -599,7 +620,7 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL, met
 		dev.off()
 	}
 
-	if(length(gtf_file)){
+	if(length(gtf_file) & normalization_flag){
 	## Compute TPM on normalized metacells ## Following the suggestion here: biostars.org/p/456800/
 		library(GenomicFeatures)
 		gtf <- as.data.frame(rtracklayer::import(gtf_file))
@@ -626,13 +647,13 @@ expected_cells = 30, threshold = 3 * expected_cells, umap_dim = 20, k= NULL, met
 		expr_mat_df <- expr_mat_df[, -which(colnames(expr_mat_df) == "exonic_len")]
 		norm_len <- expr_mat_df / matrix(rep(exonic.gene.sizes.expr, each= ncol(expr_mat_df)), ncol= ncol(expr_mat_df), byrow= T)
 		tpm.mat <- t( t(norm_len) * 1e6 / colSums(norm_len) )
-		write.csv(tpm.mat, paste0(output_file, "/results/cellSummarized_normalized_TPM", ".csv"))
-
+		write.csv(tpm.mat, paste0(output_file, "/results/RNA_cellSummarized_normalized", ".csv"))
+		write.csv(normalized_counts_all, paste0(output_file, "/results/cellSummarized_normalized", ".csv"))
 	}
+
 	rna2metacell_info <- data.frame(barcode= RNA_barcodes_ct, metacell= cell2metacell_info)
 	write.csv(rna2metacell_info, paste0(output_file, "/results/RNA_cell2metacell_info", ".csv"), row.names= F)
 	write.csv(mat, paste0(output_file, "/results/cellSummarized", ".csv"))
-	write.csv(normalized_counts_all, paste0(output_file, "/results/cellSummarized_normalized", ".csv"))
 	write.csv(mat_sum, paste0(output_file, "/results/cellSummarized", "_sum.csv"))
 	write.csv(final_umap_res, paste0(output_file, "/results/RNA_metacell_umap", ".csv"))
 	if(length(assay_slot)){
